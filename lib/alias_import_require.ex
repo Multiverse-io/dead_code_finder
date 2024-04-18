@@ -1,17 +1,22 @@
 defmodule DeadCodeFinder.AliasImportRequire do
+  @alias "alias"
+  @import "import"
+  @directives_regex "(\\b#{@alias}\\b\|\\b#{@import}\\b)"
+
   def find(file) do
     lines = String.split(file, "\n", trim: true)
-    find(%{aliases: [], imports: [], requires: [], mode: :single}, lines)
+    find(%{aliases: [], imports: [], requires: [], mode: :single, directive: @alias}, lines)
   end
 
   defp find(acc, []) do
     acc
-    |> Map.delete(:mode)
+    |> Map.drop([:mode, :directive])
     |> Map.update!(:aliases, &Enum.reverse/1)
+    |> Map.update!(:imports, &Enum.reverse/1)
   end
 
   defp find(%{mode: mode} = acc, [line | rest]) do
-    alias_finders()
+    finders()
     |> Map.fetch!(mode)
     |> Enum.reduce_while(acc, fn {regex, regex_match_fun}, acc ->
       case Regex.run(regex, line, capture: :all_but_first) do
@@ -19,67 +24,70 @@ defmodule DeadCodeFinder.AliasImportRequire do
           {:cont, acc}
 
         captures ->
-          {new_aliases, acc} = regex_match_fun.(captures, acc)
-          {:halt, %{acc | aliases: prepend_new_aliases(new_aliases, acc.aliases)}}
+          {new_modules, acc} = regex_match_fun.(captures, acc)
+
+          {:halt,
+           Map.update!(acc, directive_to_atom!(acc.directive), fn existing_modules ->
+             add_modules(new_modules, existing_modules)
+           end)}
       end
     end)
     |> find(rest)
   end
 
-  defp prepend_new_aliases(new_aliases, existing) do
-    Enum.reduce(new_aliases, existing, fn new_alias, aliases ->
-      [Module.concat([new_alias]) | aliases]
+  defp add_modules(new_modules, existing) do
+    Enum.reduce(new_modules, existing, fn new_module, modules ->
+      [Module.concat([new_module]) | modules]
     end)
   end
 
-  defp alias_finders do
+  defp directive_to_atom!(@alias), do: :aliases
+  defp directive_to_atom!(@import), do: :imports
+
+  defp finders do
     %{
       single: [
-        single_line_single_alias(),
-        single_line_multiple_aliases(),
-        multi_line_alias_start_line()
+        single_line_directive(),
+        single_line_multiple_directives(),
+        multi_line_directive_start_line()
       ],
       multi: [
-        multi_line_alias_middle_lines(),
-        multi_line_alias_last_line()
+        multi_line_directive_middle_lines(),
+        multi_line_directive_last_line()
       ]
     }
   end
 
-  defp single_line_single_alias do
-    {~r|^\s*alias ([^{\s,]+)\s*$|, fn [alias], acc -> {[alias], acc} end}
+  defp single_line_directive do
+    {~r|^\s*#{@directives_regex} ([^{\s,]+)\s*$|,
+     fn [directive, alias], acc -> {[alias], Map.put(acc, :directive, directive)} end}
   end
 
-  defp single_line_multiple_aliases do
-    {~r|^\s*alias ([^{]+)\.{([^}]+)}|,
-     fn [namespace, aliases], acc ->
-       aliases =
-         aliases
+  defp single_line_multiple_directives do
+    {~r|^\s*#{@directives_regex} ([^{]+)\.{([^}]+)}|,
+     fn [directive, namespace, modules], acc ->
+       modules =
+         modules
          |> String.split(",")
-         |> Enum.map(fn alias -> namespace <> "." <> String.trim(alias) end)
+         |> Enum.map(fn module -> namespace <> "." <> String.trim(module) end)
 
-       {aliases, acc}
+       {modules, Map.put(acc, :directive, directive)}
      end}
   end
 
-  defp multi_line_alias_start_line do
-    {~r|^\s*alias ([^{\s,]+)\.{$|,
-     fn [namespace], acc ->
-       {[], Map.merge(acc, %{namespace: namespace, mode: :multi})}
+  defp multi_line_directive_start_line do
+    {~r|^\s*#{@directives_regex} ([^{\s,]+)\.{$|,
+     fn [directive, namespace], acc ->
+       {[], Map.merge(acc, %{directive: directive, namespace: namespace, mode: :multi})}
      end}
   end
 
-  defp multi_line_alias_middle_lines do
-    {~r|^\s*([^{\s,]+),$|,
-     fn [alias], acc ->
-       {[acc.namespace <> "." <> alias], acc}
-     end}
+  defp multi_line_directive_middle_lines do
+    {~r|^\s*([^{\s,]+),$|, fn [module], acc -> {[acc.namespace <> "." <> module], acc} end}
   end
 
-  defp multi_line_alias_last_line do
+  defp multi_line_directive_last_line do
     {~r|^\s*([^{\s,]+)|,
-     fn [alias], acc ->
-       {[acc.namespace <> "." <> alias], Map.put(acc, :mode, :single)}
-     end}
+     fn [alias], acc -> {[acc.namespace <> "." <> alias], Map.put(acc, :mode, :single)} end}
   end
 end
