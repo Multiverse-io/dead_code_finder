@@ -1,7 +1,8 @@
 defmodule DeadCodeFinder.AliasImportRequire do
   @alias "alias"
   @import "import"
-  @directives_regex "(\\b#{@alias}\\b\|\\b#{@import}\\b)"
+  @require "require"
+  @directives_regex "(\\b#{@alias}\\b\|\\b#{@import}\\b\|\\b#{@require}\\b)"
 
   def find(file) do
     lines = String.split(file, "\n", trim: true)
@@ -10,9 +11,8 @@ defmodule DeadCodeFinder.AliasImportRequire do
 
   defp find(acc, []) do
     acc
-    |> Map.drop([:mode, :directive])
-    |> Map.update!(:aliases, &Enum.reverse/1)
-    |> Map.update!(:imports, &Enum.reverse/1)
+    |> Map.drop([:mode, :directive, :namespace])
+    |> Map.new(fn {directive, modules} -> {directive, Enum.reverse(modules)} end)
   end
 
   defp find(%{mode: mode} = acc, [line | rest]) do
@@ -43,6 +43,7 @@ defmodule DeadCodeFinder.AliasImportRequire do
 
   defp directive_to_atom!(@alias), do: :aliases
   defp directive_to_atom!(@import), do: :imports
+  defp directive_to_atom!(@require), do: :requires
 
   defp finders do
     %{
